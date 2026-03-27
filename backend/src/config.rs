@@ -9,12 +9,17 @@ use std::env::var;
  */
 
 pub(crate) static PANEL_VERSION: OnceCell<String> = OnceCell::new();
+pub(crate) static MONGO_URL: OnceCell<String> = OnceCell::new();
+
 
 pub(crate) fn init_config() {
     // Format for this:
     // ```rust
     // let _ = <ENV_VARIABLE_NAME>.set(var("<ENV_VARIABLE_NAME>").expect("<ENV_VARIABLE_NAME> not set"));
     //```
-    
+    dotenvy::dotenv().ok();
+
     let _ = PANEL_VERSION.set(var("PANEL_VERSION").expect("PANEL_VERSION not set"));
+    let _ = MONGO_URL.set(var("MONGO_URL").expect("MONGO_URL not set"));
+
 }

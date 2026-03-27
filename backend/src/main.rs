@@ -1,8 +1,14 @@
 // Modules
 mod config;
+mod axum_stuff;
+mod database;
 
 // Imports
 use std::fmt;
+use axum::{
+    Router,
+    routing::{any}
+};
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::{
@@ -13,18 +19,38 @@ use tracing_subscriber::{
 use tracing_appender::rolling;
 use tracing_subscriber::fmt::layer;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_futures::Instrument;
 use chrono::Local;
+use tower::ServiceBuilder;
+use tower_http::catch_panic::CatchPanicLayer;
+use std::net::SocketAddr;
 
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Wyra Panel Starting...");
     let _logging_guard = init_logging(); // _logging_guard keeps the guard alive 
     //for the entire application.
     tracing::info!("Logging initialized!");
-    crate::config::init_config();
+    config::init_config();
     tracing::info!("Config initialized!");
+    database::mongo_connect().await.expect("MongoDB Connection Failed: ");
 
+    let app = Router::new()
+        // Handlers
+        .route("/", any(axum_stuff::root_handler))
+        
+        .method_not_allowed_fallback(axum_stuff::handler_405)
+        .layer(
+            ServiceBuilder::new()
+                .layer(CatchPanicLayer::custom(axum_stuff::handler_500))
+        )
+        .into_make_service_with_connect_info::<SocketAddr>();
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
+    tracing::info!(version = config::PANEL_VERSION.get().unwrap(), "Started Wyra Panel...");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(axum_stuff::shutdown_signal())
+        .await.expect("Failed to start axum");
 }
 
 // -------
