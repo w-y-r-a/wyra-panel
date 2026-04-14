@@ -67,5 +67,5 @@ pub(crate) async fn shutdown_signal() {
 async fn shutdown_handler() {
     database::mongo_shutdown().await;
 
-    tracing::error!("MongoDB Shut Down.");
+    tracing::info!("MongoDB Shut Down.");
 }

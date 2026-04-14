@@ -24,6 +24,7 @@ use tower::ServiceBuilder;
 use tower_http::catch_panic::CatchPanicLayer;
 use std::net::SocketAddr;
 
+const PORT: u32 = 9080;
 
 #[tokio::main]
 async fn main() {
@@ -45,8 +46,9 @@ async fn main() {
                 .layer(CatchPanicLayer::custom(axum_stuff::handler_500))
         )
         .into_make_service_with_connect_info::<SocketAddr>();
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
+    
+    tracing::info!("Starting Wyra Panel on port {}", PORT);
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", PORT)).await.expect("Failed to bind to port: ");
     tracing::info!(version = config::PANEL_VERSION.get().unwrap(), "Started Wyra Panel...");
     axum::serve(listener, app)
         .with_graceful_shutdown(axum_stuff::shutdown_signal())
@@ -77,7 +79,7 @@ fn init_logging() -> WorkerGuard {
     let filter = EnvFilter::try_new(log_level)
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file_appender = rolling::never("./log", "app.log");
+    let file_appender = rolling::never("./log", format!("wp-backend-{}.log", chrono::Utc::now().to_rfc3339()));
     let (file_writer, guard) =
         tracing_appender::non_blocking(file_appender);
 
