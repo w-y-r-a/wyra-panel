@@ -2,3 +2,6 @@
 .env
 app.log
 /log
+host_uuid-DONT-DELETE-OR-MODIFY.txt
+setup_completion.json
+/keys

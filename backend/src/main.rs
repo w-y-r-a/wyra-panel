@@ -2,12 +2,18 @@
 mod config;
 mod axum_stuff;
 mod database;
+mod core;
+mod auth;
 
-// Imports
 use std::fmt;
+use std::fs;
+use std::io::Read;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::io::Write;
 use axum::{
     Router,
-    routing::{any}
+    routing::{any, post},
 };
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::fmt::format::Writer;
@@ -22,29 +28,79 @@ use tracing_appender::non_blocking::WorkerGuard;
 use chrono::Local;
 use tower::ServiceBuilder;
 use tower_http::catch_panic::CatchPanicLayer;
-use std::net::SocketAddr;
+use hostname::get as hostname_get;
+use once_cell::sync::OnceCell;
+use tokio::fs::{File, self as tokio_fs};
+use serde::{Serialize, Deserialize};
+use openssl::pkey::{PKey, Id};
+use pasetors::keys::{Generate, AsymmetricKeyPair, AsymmetricSecretKey, AsymmetricPublicKey};
+use pasetors::version4::V4;
 
-const PORT: u32 = 9080;
+static HOSTNAME: OnceCell<String> = OnceCell::new();
+static HOST_UUID: OnceCell<String> = OnceCell::new();
+static KEY_PAIR: OnceCell<AsymmetricKeyPair<V4>> = OnceCell::new();
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetupComplete {
+    first_register: bool
+}
+
+impl fmt::Display for SetupComplete {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, r#"{{ "first_register": {} }}"#, self.first_register)
+    }
+}
+
+impl Default for SetupComplete {
+    fn default() -> Self {
+        tracing::warn!("setup_completion.json not found, using default");
+        Self { first_register: false }
+    }
+}
+
+impl SetupComplete {
+    fn write_to_disk(&self) {
+        fs::write("setup_completion.json", self.to_string()).expect("Failed to write changes");
+    }
+    fn read_from_disk() -> Self {
+        let contents = fs::read_to_string("setup_completion.json").unwrap_or_default();
+        serde_json::from_str(&contents).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AppState {
+    setup_complete: Arc<Mutex<SetupComplete>> // arc so multiple threads can access it
+}
+
+const PORT: u32 = 9080; // planning to replace this with an env variable
 
 #[tokio::main]
 async fn main() {
     println!("Wyra Panel Starting...");
     let _logging_guard = init_logging(); // _logging_guard keeps the guard alive 
-    //for the entire application.
+    // for the entire application.
     tracing::info!("Logging initialized!");
+    tracing::info!("Hello {}!", get_hostname());
+    let _ = HOST_UUID.set(set_or_get_host_uuid().await);
     config::init_config();
     tracing::info!("Config initialized!");
     database::mongo_connect().await.expect("MongoDB Connection Failed: ");
+    create_and_set_paseto_keys();
+
+    let state = AppState { setup_complete: Arc::new(Mutex::new(SetupComplete::read_from_disk())) };
 
     let app = Router::new()
         // Handlers
         .route("/", any(axum_stuff::root_handler))
-        
+        .route("/auth/local/init_register", post(auth::initial_register::initial_register_handler))
+
         .method_not_allowed_fallback(axum_stuff::handler_405)
         .layer(
             ServiceBuilder::new()
                 .layer(CatchPanicLayer::custom(axum_stuff::handler_500))
         )
+        .with_state(state)
         .into_make_service_with_connect_info::<SocketAddr>();
     
     tracing::info!("Starting Wyra Panel on port {}", PORT);
@@ -115,3 +171,120 @@ fn init_panic_logging() {
 
 // -------
 
+fn get_hostname() -> &'static str {
+    HOSTNAME.get_or_init(|| {
+        hostname_get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_else(|| {tracing::warn!("No Hostname!"); "unknown".to_string()})
+    })
+}
+
+async fn set_or_get_host_uuid() -> String {
+    let file = File::open("host_uuid-DONT-DELETE-OR-MODIFY.txt").await;
+    let uuid = match file {
+        Ok(mut f) => {
+            let mut contents = String::new();
+            tokio::io::AsyncReadExt::read_to_string(&mut f, &mut contents).await.expect("Failed to read host UUID file: ");
+            let _ = HOST_UUID.set(contents.trim().to_string());
+            tracing::info!("Using existing host UUID: {}", contents.trim());
+            contents.trim().to_string()
+        },
+        Err(_) => {
+            let new_uuid = uuid::Uuid::new_v4().to_string();
+            tracing::warn!("No host UUID found, generating new one: {}", new_uuid);
+            tokio_fs::write("host_uuid-DONT-DELETE-OR-MODIFY.txt", &new_uuid).await.expect("Failed to write host UUID file: ");
+            let _ = HOST_UUID.set(new_uuid.clone());
+            new_uuid
+        }
+    };
+    return uuid;
+}
+
+// creates (if not already exists) and sets the paseto key
+fn create_and_set_paseto_keys() {
+    match fs::File::open("keys/private.pem") {
+        Err(_) => {
+            //FIXME: crate `pasetors` can generate it's own key pair, so do that instead.
+            tracing::warn!("`keys/private.pem` not found, generating key pair.");
+            let key_pair = AsymmetricKeyPair::generate().unwrap();
+
+            fs::create_dir("keys").unwrap();
+            fs::File::create("keys/private.pem").expect("failed to create `keys/private.pem`").write(secret_key_to_pem(&key_pair.secret).as_bytes()).unwrap();
+            fs::File::create("keys/public.pem").expect("failed to create `keys/public.pem`").write(public_key_to_pem(&key_pair.public).as_bytes()).unwrap();
+
+            KEY_PAIR.set(key_pair).expect("Failed to set KEY_PAIR with key_pair");
+        }
+        Ok(mut secret_file) => {
+            #[allow(unused)]
+            let mut public_file = fs::File::open("keys/public.pem").expect("`keys/private.pem` exists, but `keys/public.pem` doesn't.\n Solution: Delete the keys/ directory.");
+            tracing::info!("Public and Private key found!");
+            #[allow(unused)]
+            let mut secret_key = String::new();
+            #[allow(unused)]
+            let mut public_key = String::new();
+
+            secret_file.read_to_string(&mut secret_key).expect("keys/private.pem is not UTF-8");
+            public_file.read_to_string(&mut public_key).expect("keys/public.pem is not UTF-8");
+
+            let secret_key = pem_to_private_key(secret_key);
+            let public_key = pem_to_public_key(public_key);
+
+            let key_pair = AsymmetricKeyPair::<V4> {public: public_key, secret: secret_key};
+
+            KEY_PAIR.set(key_pair).expect("Failed to set KEY_PAIR with key_pair");
+        }
+    }
+}
+
+fn pem_to_public_key(pem: String) -> AsymmetricPublicKey<V4> {
+    let pkey = PKey::public_key_from_pem(pem.as_bytes()).expect("Invalid Public PEM File!");
+
+    let raw_bytes = pkey.raw_public_key().unwrap();
+
+    let bytes_array: [u8; 32] = raw_bytes.as_slice().try_into()
+        .map_err(|_| "Public key is not the expected 32 bytes for Ed25519").unwrap();
+
+    let public_key = AsymmetricPublicKey::<V4>::from(&bytes_array).unwrap();
+    public_key
+}
+
+fn pem_to_private_key(pem: String) -> AsymmetricSecretKey<V4> {
+    let pkey = PKey::private_key_from_pem(pem.as_bytes()).expect("Invalid Private PEM File!");
+
+    let raw_bytes = pkey.raw_private_key().unwrap();
+
+    let bytes_array: [u8; 32] = raw_bytes.as_slice().try_into()
+        .map_err(|_| "Private key is not the expected 32 bytes for Ed25519").unwrap();
+
+    let private_key = AsymmetricSecretKey::<V4>::from(&bytes_array).unwrap();
+    private_key
+}
+
+
+fn public_key_to_pem(public_key: &AsymmetricPublicKey<V4>) -> String {
+    let pub_bytes = public_key.as_bytes();
+
+    let pkey = PKey::public_key_from_raw_bytes(pub_bytes, Id::ED25519)
+        .expect("Failed to create PKey from bytes");
+
+    let pem_bytes = pkey.public_key_to_pem()
+        .expect("Failed to generate PEM");
+
+    String::from_utf8(pem_bytes).expect("Invalid UTF-8 generated")
+}
+
+fn secret_key_to_pem(secret_key: &AsymmetricSecretKey<V4>) -> String {
+    // pasetors secret key bytes are 64 bytes (seed + public key) for v4/Ed25519.
+    // OpenSSL's Ed25519 raw private key constructor expects only the 32-byte seed.
+    let secret_bytes = secret_key.as_bytes();
+    let seed_bytes = &secret_bytes[..32];
+
+    let pkey = PKey::private_key_from_raw_bytes(seed_bytes, Id::ED25519)
+        .expect("Failed to create PKey from seed bytes");
+
+    let pem_bytes = pkey.private_key_to_pem_pkcs8()
+        .expect("Failed to generate PKCS#8 PEM");
+
+    String::from_utf8(pem_bytes).expect("Invalid UTF-8 generated")
+}

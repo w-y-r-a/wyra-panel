@@ -31,7 +31,7 @@ pub fn get_collection(
         mongodb::error::Error::custom("MongoDB client not initialized")
     })?;
     Ok(client
-        .database("wyra")
+        .database("wsp")
         .collection::<mongodb::bson::Document>(collection_name))
 }
 
