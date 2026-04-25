@@ -11,7 +11,7 @@ use argon2::{
     }
 };
 use rand::rngs::OsRng;
-use crate::{AppState, HOST_UUID, HOSTNAME, database::get_collection};
+use crate::{AppState, HOST_UUID, HOSTNAME, database::{get_collection, is_duplicate_key_error}};
 use uuid::Uuid;
 use bson::serialize_to_document;
 
@@ -85,7 +85,13 @@ pub(crate) async fn initial_register_handler(
                 message: "User registered successfully".to_string()
             }));
         }
-        Err(_) => {
+        Err(e) => {
+            if is_duplicate_key_error(&e) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(InitialRegisterResponse {
+                    success: false,
+                    message: "Username already exists (you may need to check your database, this is first register)".to_string()
+                }));
+            }
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(InitialRegisterResponse {
                 success: false,
                 message: "Failed to register user".to_string()

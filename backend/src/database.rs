@@ -2,12 +2,15 @@ use mongodb::{
     bson::doc,
     options::ClientOptions,
     Client,
+    options::IndexOptions,
+    IndexModel,
 };
 use once_cell::sync::{OnceCell};
+use mongodb::error::{ErrorKind, WriteFailure};
 
-pub static CLIENT: OnceCell<mongodb::Client> = OnceCell::new();
+pub(crate) static CLIENT: OnceCell<mongodb::Client> = OnceCell::new();
 
-pub async fn mongo_connect() -> mongodb::error::Result<()> {
+pub(crate) async fn mongo_connect() -> mongodb::error::Result<()> {
     let mongodb_uri = crate::config::MONGO_URL.get().unwrap();
 
     let client_options = ClientOptions::parse(mongodb_uri).await
@@ -23,8 +26,39 @@ pub async fn mongo_connect() -> mongodb::error::Result<()> {
     Ok(())
 }
 
+pub(crate) async fn set_indexes() {
+    tracing::info!("Setting MongoDB indexes...");
+    
+    let users_col = get_collection("users").expect("Failed to load users collection");
+    let sessions_col = get_collection("sessions").expect("Failed to load sessions collection");
+    
+    let options = IndexOptions::builder()
+        .unique(true)
+        .build();
+    
+    let user_index_1 = IndexModel::builder()
+        .keys(doc! { "id": 1})
+        .options(options.clone())
+        .build();
+    
+    let user_index_2 = IndexModel::builder()
+        .keys(doc! { "username": 1})
+        .options(options.clone())
+        .build();
+    
+    users_col.create_index(user_index_1).await.expect("Failed to create index 1 for users");
+    users_col.create_index(user_index_2).await.expect("Failed to create index 2 for users");
+    
+    let session_index = IndexModel::builder()
+        .keys(doc! { "session_id": 1 })
+        .options(options)
+        .build();
+    
+    sessions_col.create_index(session_index).await.expect("Failed to create index for sessions");
+}
+
 #[allow(dead_code)]
-pub fn get_collection(
+pub(crate) fn get_collection(
     collection_name: &str
 ) -> Result<mongodb::Collection<mongodb::bson::Document>, mongodb::error::Error> {
     let client = CLIENT.get().ok_or_else(|| {
@@ -35,8 +69,7 @@ pub fn get_collection(
         .collection::<mongodb::bson::Document>(collection_name))
 }
 
-
-pub async fn mongo_shutdown() {
+pub(crate) async fn mongo_shutdown() {
     tracing::info!("Attempting MongoDB shutdown...");
 
     let client = match CLIENT.get() {
@@ -50,4 +83,11 @@ pub async fn mongo_shutdown() {
     client.shutdown().await;
 
     tracing::info!("MongoDB shutdown complete.");
+}
+
+pub(crate) fn is_duplicate_key_error(err: &mongodb::error::Error) -> bool {
+    matches!(
+        err.kind.as_ref(),
+        ErrorKind::Write(WriteFailure::WriteError(write_err)) if write_err.code == 11000
+    )
 }

@@ -86,6 +86,7 @@ async fn main() {
     config::init_config();
     tracing::info!("Config initialized!");
     database::mongo_connect().await.expect("MongoDB Connection Failed: ");
+    database::set_indexes().await;
     create_and_set_paseto_keys();
 
     let state = AppState { setup_complete: Arc::new(Mutex::new(SetupComplete::read_from_disk())) };
@@ -94,6 +95,7 @@ async fn main() {
         // Handlers
         .route("/", any(axum_stuff::root_handler))
         .route("/auth/local/init_register", post(auth::initial_register::initial_register_handler))
+        .route("/auth/local/login", post(auth::login::login))
 
         .method_not_allowed_fallback(axum_stuff::handler_405)
         .layer(
@@ -252,12 +254,20 @@ fn pem_to_public_key(pem: String) -> AsymmetricPublicKey<V4> {
 fn pem_to_private_key(pem: String) -> AsymmetricSecretKey<V4> {
     let pkey = PKey::private_key_from_pem(pem.as_bytes()).expect("Invalid Private PEM File!");
 
-    let raw_bytes = pkey.raw_private_key().unwrap();
+    let seed_raw = pkey.raw_private_key().expect("Failed to extract raw private key bytes");
+    let seed_bytes: [u8; 32] = seed_raw.as_slice().try_into()
+        .map_err(|_| "Private key is not the expected 32-byte Ed25519 seed").unwrap();
 
-    let bytes_array: [u8; 32] = raw_bytes.as_slice().try_into()
-        .map_err(|_| "Private key is not the expected 32 bytes for Ed25519").unwrap();
+    let public_raw = pkey.raw_public_key().expect("Failed to extract raw public key bytes");
+    let public_bytes: [u8; 32] = public_raw.as_slice().try_into()
+        .map_err(|_| "Public key is not the expected 32 bytes for Ed25519").unwrap();
 
-    let private_key = AsymmetricSecretKey::<V4>::from(&bytes_array).unwrap();
+    let mut pasetors_secret = [0u8; 64];
+    pasetors_secret[..32].copy_from_slice(&seed_bytes);
+    pasetors_secret[32..].copy_from_slice(&public_bytes);
+
+    let private_key = AsymmetricSecretKey::<V4>::from(&pasetors_secret)
+        .expect("Failed to create private key from bytes");
     private_key
 }
 
