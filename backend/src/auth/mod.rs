@@ -3,6 +3,7 @@ pub(crate) mod login;
 pub(crate) mod token_helpers;
 
 use serde::{Deserialize, Serialize};
+use bson::DateTime;
 
 // Represents a user
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +25,10 @@ pub(crate) struct Session {
     pub(crate) id: String, // UUID for multi-server support
     pub(crate) username: String,
     pub(crate) host: Option<String>, // Will be used for multi-server support
-    pub(crate) host_uuid: Option<String>, // Will be used for multi-server support, to uniquely identify the server the user is authenticated to
+    pub(crate) host_uuid: Option<String>, // Will be used for multi-server support, to uniquely identify the server the user is authenticated to,
+    pub(crate) expires_at: DateTime,
+    pub(crate) issued_at: DateTime,
+    pub(crate) last_active_at: DateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

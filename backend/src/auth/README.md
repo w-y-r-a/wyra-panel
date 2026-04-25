@@ -1,1 +1,0 @@
-maybe i should add the AuthedUser and User to the plugin lib, whenever i make it.

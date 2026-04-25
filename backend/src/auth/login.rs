@@ -2,11 +2,12 @@ use axum::{
     Json,
     http::StatusCode
 };
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use super::{Session, TokenClaims, token_helpers::generate_token};
 use crate::{HOST_UUID, HOSTNAME, database::get_collection};
 use uuid::Uuid;
-use bson::{doc, serialize_to_document};
+use bson::{DateTime, doc, serialize_to_document};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,7 +49,7 @@ pub(crate) async fn login(
 
     match argon2.verify_password(payload.password.as_bytes(), &parsed_hash) {
         Ok(_) => {},
-        Err(_) => return (StatusCode::NOT_FOUND, Json(
+        Err(_) => return (StatusCode::UNAUTHORIZED, Json(
             LoginResponse { success: false, message: "Incorrect Password".to_string() 
         }))
     }
@@ -64,6 +65,9 @@ pub(crate) async fn login(
         host_uuid: Some(host_uuid),
         session_id,
         id,
+        expires_at: DateTime::from_chrono(Utc::now() + Duration::hours(1)),
+        issued_at: DateTime::from_chrono(Utc::now()),
+        last_active_at: DateTime::from_chrono(Utc::now()),
     };
     
     let session_doc = serialize_to_document(&session).expect("Failed to serialize session");
@@ -75,7 +79,7 @@ pub(crate) async fn login(
         host_uuid: session.host_uuid,
     };
     
-    let token = generate_token(token_claims);
+    let token = generate_token(token_claims, None);
     
     return (
         StatusCode::OK,
