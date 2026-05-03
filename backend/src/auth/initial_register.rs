@@ -39,7 +39,7 @@ pub(crate) async fn initial_register_handler(
 
     // Check if setup is already complete
     {
-        let setup = state.setup_complete.lock().unwrap();
+        let setup = state.setup_complete.lock().await;
         if setup.first_register {
             return (StatusCode::BAD_REQUEST, Json(InitialRegisterResponse {
                 success: false,
@@ -82,7 +82,7 @@ pub(crate) async fn initial_register_handler(
     match users_collection.insert_one(serialize_to_document(&user).expect("Failed to serialize user into document")).await {
         Ok(_) => {
             {
-                let mut setup = state.setup_complete.lock().expect("Failed to lock setup_complete");
+                let mut setup = state.setup_complete.lock().await;
                 setup.first_register = true; // Mark setup as complete
                 setup.write_to_disk();
             }

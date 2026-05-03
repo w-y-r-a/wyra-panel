@@ -14,8 +14,10 @@ use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use axum::response::Response;
 use axum::{
     Router,
@@ -45,13 +47,9 @@ use axum::{
     extract::ConnectInfo,
     extract::Request,
     middleware::Next,
-    body::Body,
-    response::IntoResponse,
-    http::StatusCode
+    body::Body
 };
 use bson::doc;
-
-use crate::auth::token_helpers::decode_token;
 use crate::get_ip::IpExtractor;
 use crate::groups::group_helpers::init_permissions;
 // re-exports
@@ -127,7 +125,7 @@ async fn main() {
             ServiceBuilder::new()
                 .layer(CatchPanicLayer::custom(axum_stuff::handler_500))
         )
-        //.layer(axum::middleware::from_fn(middleware_one))
+        .layer(axum::middleware::from_fn(middleware_one))
         .with_state(state)
         .into_make_service_with_connect_info::<SocketAddr>();
     
@@ -147,83 +145,11 @@ async fn middleware_one(
 ) -> Response {
     let req_id = uuid::Uuid::new_v4();
     let ip = get_ip::get_ip(IpExtractor { headers: req.headers(), addr: &addr });
-    tracing::info!(req_id = &req_id.to_string(), header_ip = &ip.header_ip, upstream_ip = &ip.upstream_ip, "Incoming request!");
+    let uri = req.uri().to_string();
+    let next = next.run(req).await;
+    tracing::info!(req_id = &req_id.to_string(), header_ip = &ip.header_ip, upstream_ip = &ip.upstream_ip, path=uri, status_code=&next.status().as_u16(), "Incoming request!");
 
-    // user logging
-    let maybe_access_token = req.headers().get("token");
-    if let Some(access_token) = maybe_access_token {
-        let access_token = access_token.to_str().unwrap_or("").to_string();
-
-        let claims = decode_token(&KEY_PAIR.get().unwrap().public, &access_token);
-        if let Ok(claims) = claims { // Allow silent failures, not that important.
-            // Now, we won't allow silent failures, e.g. SID not found, user not found, user disabled, etc.
-            // The following code is part of helpers::get_user_from_headers
-            
-            let sid = &claims.get_claim("sid");
-        
-            if sid.is_none() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    PanelResponse {
-                        success: false,
-                        message: "Session ID not included in token. You may want to log in again.".to_string(),
-                        other: None
-                    }
-                    ).into_response()
-            }
-        
-            let sid = sid.unwrap().to_string();
-            let sub = claims.get_claim("sub");
-        
-            if sub.is_none() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    PanelResponse {
-                        success: false,
-                        message: "Session ID not included in token. You may want to log in again.".to_string(),
-                        other: None
-                    }
-                ).into_response()
-            }
-        
-            let sub = sub.unwrap().to_string();
-        
-            let users_col = database::get_collection("users").expect("Failed to load users collection");
-        
-            match users_col.find_one(doc! {"id": sub}).await.expect("Failed to lookup user") {
-                Some(_) => {},
-                None => return (
-                    StatusCode::NOT_FOUND,
-                    PanelResponse {
-                        success: false,
-                        message: "User Not Found".to_string(),
-                        other: None
-                    }
-                ).into_response()
-            };
-        
-            let sessions_col = database::get_collection("sessions").expect("Failed to load sessions collection");
-        
-            let session = match sessions_col.find_one(doc! {"session_id": sid}).await.expect("Failed to lookup user's session") {
-                Some(d) => d,
-                None => return (
-                    StatusCode::FORBIDDEN,
-                    PanelResponse {
-                        success: false,
-                        message: "Session ID Not found. You may want to log in again.".to_string(),
-                        other: None
-                    }
-                    ).into_response()
-            };
-
-            let _ = sessions_col.update_one(session, doc! {
-                "$set": { "last_active_at": bson::DateTime::now(), }
-            }).await.expect("Failed to update user");
-            
-        }
-    }
-
-    return next.run(req).await;
+    return next
 }
 
 
@@ -323,10 +249,14 @@ fn create_and_set_paseto_keys() {
         Err(_) => {
             tracing::warn!("`keys/private.pem` not found, generating key pair.");
             let key_pair = AsymmetricKeyPair::generate().unwrap();
+            // blocking intentionally
 
             fs::create_dir("keys").unwrap();
             fs::File::create("keys/private.pem").expect("failed to create `keys/private.pem`").write(secret_key_to_pem(&key_pair.secret).as_bytes()).unwrap();
             fs::File::create("keys/public.pem").expect("failed to create `keys/public.pem`").write(public_key_to_pem(&key_pair.public).as_bytes()).unwrap();
+
+            // change file permissions to 0600
+            fs::File::set_permissions(&fs::File::open("keys/private.pem").expect("failed to open `keys/private.pem"), fs::Permissions::from_mode(0o600)).expect("Failed to set permissions on private key file");
 
             KEY_PAIR.set(key_pair).expect("Failed to set KEY_PAIR with key_pair");
         }

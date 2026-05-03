@@ -122,7 +122,7 @@ pub async fn get_user_from_headers(headers: &HeaderMap) -> Result<UserCrossRoads
                 StatusCode::BAD_REQUEST,
                 PanelResponse {
                     success: false,
-                    message: "Subject claim is not a string.".to_string(),
+                    message: "Session ID claim is not a string.".to_string(),
                     other: None
                 }
             ))

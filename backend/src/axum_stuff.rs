@@ -60,7 +60,7 @@ pub(crate) async fn shutdown_signal() {
 
     tokio::select! {
         _ = ctrl_c => {print!("\n"); tracing::info!("Ctrl+C received; Wyra Panel shutting down..."); shutdown_handler().await;}
-        _ = terminate => tracing::info!("SIGTERM received; Wyra Panel shutting down..."),
+        _ = terminate => {tracing::info!("SIGTERM received; Wyra Panel shutting down..."); shutdown_handler().await;},
     }
 }
 
