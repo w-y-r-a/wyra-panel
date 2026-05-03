@@ -4,13 +4,19 @@ mod axum_stuff;
 mod database;
 mod core;
 mod auth;
+mod get_ip;
+mod security_logger;
+mod helpers;
+mod groups;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::io::Write;
+use axum::response::Response;
 use axum::{
     Router,
     routing::{any, post},
@@ -35,10 +41,27 @@ use serde::{Serialize, Deserialize};
 use openssl::pkey::{PKey, Id};
 use pasetors::keys::{Generate, AsymmetricKeyPair, AsymmetricSecretKey, AsymmetricPublicKey};
 use pasetors::version4::V4;
+use axum::{
+    extract::ConnectInfo,
+    extract::Request,
+    middleware::Next,
+    body::Body,
+    response::IntoResponse,
+    http::StatusCode
+};
+use bson::doc;
+
+use crate::auth::token_helpers::decode_token;
+use crate::get_ip::IpExtractor;
+use crate::groups::group_helpers::init_permissions;
+// re-exports
+use crate::helpers::*;
 
 static HOSTNAME: OnceCell<String> = OnceCell::new();
 static HOST_UUID: OnceCell<String> = OnceCell::new();
 static KEY_PAIR: OnceCell<AsymmetricKeyPair<V4>> = OnceCell::new();
+static AVAILABLE_PERMISSIONS: OnceCell<HashMap<String, String>> = OnceCell::new(); // Loaded from plugins.
+// Also, the hashmap is there because the permissions also need a description for the list
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupComplete {
@@ -88,6 +111,7 @@ async fn main() {
     database::mongo_connect().await.expect("MongoDB Connection Failed: ");
     database::set_indexes().await;
     create_and_set_paseto_keys();
+    init_permissions();
 
     let state = AppState { setup_complete: Arc::new(Mutex::new(SetupComplete::read_from_disk())) };
 
@@ -96,12 +120,14 @@ async fn main() {
         .route("/", any(axum_stuff::root_handler))
         .route("/auth/local/init_register", post(auth::initial_register::initial_register_handler))
         .route("/auth/local/login", post(auth::login::login))
+        .route("/auth/local/register", post(auth::register::register_handler))
 
         .method_not_allowed_fallback(axum_stuff::handler_405)
         .layer(
             ServiceBuilder::new()
                 .layer(CatchPanicLayer::custom(axum_stuff::handler_500))
         )
+        //.layer(axum::middleware::from_fn(middleware_one))
         .with_state(state)
         .into_make_service_with_connect_info::<SocketAddr>();
     
@@ -112,6 +138,94 @@ async fn main() {
         .with_graceful_shutdown(axum_stuff::shutdown_signal())
         .await.expect("Failed to start axum");
 }
+
+// Middleware to check for user
+async fn middleware_one(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let req_id = uuid::Uuid::new_v4();
+    let ip = get_ip::get_ip(IpExtractor { headers: req.headers(), addr: &addr });
+    tracing::info!(req_id = &req_id.to_string(), header_ip = &ip.header_ip, upstream_ip = &ip.upstream_ip, "Incoming request!");
+
+    // user logging
+    let maybe_access_token = req.headers().get("token");
+    if let Some(access_token) = maybe_access_token {
+        let access_token = access_token.to_str().unwrap_or("").to_string();
+
+        let claims = decode_token(&KEY_PAIR.get().unwrap().public, &access_token);
+        if let Ok(claims) = claims { // Allow silent failures, not that important.
+            // Now, we won't allow silent failures, e.g. SID not found, user not found, user disabled, etc.
+            // The following code is part of helpers::get_user_from_headers
+            
+            let sid = &claims.get_claim("sid");
+        
+            if sid.is_none() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    PanelResponse {
+                        success: false,
+                        message: "Session ID not included in token. You may want to log in again.".to_string(),
+                        other: None
+                    }
+                    ).into_response()
+            }
+        
+            let sid = sid.unwrap().to_string();
+            let sub = claims.get_claim("sub");
+        
+            if sub.is_none() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    PanelResponse {
+                        success: false,
+                        message: "Session ID not included in token. You may want to log in again.".to_string(),
+                        other: None
+                    }
+                ).into_response()
+            }
+        
+            let sub = sub.unwrap().to_string();
+        
+            let users_col = database::get_collection("users").expect("Failed to load users collection");
+        
+            match users_col.find_one(doc! {"id": sub}).await.expect("Failed to lookup user") {
+                Some(_) => {},
+                None => return (
+                    StatusCode::NOT_FOUND,
+                    PanelResponse {
+                        success: false,
+                        message: "User Not Found".to_string(),
+                        other: None
+                    }
+                ).into_response()
+            };
+        
+            let sessions_col = database::get_collection("sessions").expect("Failed to load sessions collection");
+        
+            let session = match sessions_col.find_one(doc! {"session_id": sid}).await.expect("Failed to lookup user's session") {
+                Some(d) => d,
+                None => return (
+                    StatusCode::FORBIDDEN,
+                    PanelResponse {
+                        success: false,
+                        message: "Session ID Not found. You may want to log in again.".to_string(),
+                        other: None
+                    }
+                    ).into_response()
+            };
+
+            let _ = sessions_col.update_one(session, doc! {
+                "$set": { "last_active_at": bson::DateTime::now(), }
+            }).await.expect("Failed to update user");
+            
+        }
+    }
+
+    return next.run(req).await;
+}
+
 
 // -------
 // Logging
@@ -207,7 +321,6 @@ async fn set_or_get_host_uuid() -> String {
 fn create_and_set_paseto_keys() {
     match fs::File::open("keys/private.pem") {
         Err(_) => {
-            //FIXME: crate `pasetors` can generate it's own key pair, so do that instead.
             tracing::warn!("`keys/private.pem` not found, generating key pair.");
             let key_pair = AsymmetricKeyPair::generate().unwrap();
 

@@ -1,7 +1,7 @@
+use std::net::SocketAddr;
+
 use axum::{
-    Json,
-    http::StatusCode,
-    extract::State
+    Json, extract::{ConnectInfo, State}, http::{HeaderMap, StatusCode}
 };
 use serde::{Deserialize, Serialize};
 use super::User;
@@ -11,7 +11,7 @@ use argon2::{
     }
 };
 use rand::rngs::OsRng;
-use crate::{AppState, HOST_UUID, HOSTNAME, database::{get_collection, is_duplicate_key_error}};
+use crate::{AppState, HOST_UUID, HOSTNAME, database::{get_collection, is_duplicate_key_error}, get_ip::{get_ip, IpExtractor}, security_logger::{SecurityEvent, log_event}};
 use uuid::Uuid;
 use bson::serialize_to_document;
 
@@ -31,6 +31,8 @@ pub(crate) struct InitialRegisterResponse {
 
 // POST /auth/local/init_register
 pub(crate) async fn initial_register_handler(
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(payload): Json<InitialRegisterRequest>
 ) -> (StatusCode, Json<InitialRegisterResponse>) {
@@ -59,8 +61,11 @@ pub(crate) async fn initial_register_handler(
         }
     };
 
+    let id = Uuid::new_v4().to_string();
+
     let user = User {
-        id: Uuid::new_v4().to_string(),
+        id,
+        disabled: false,
         username: payload.username,
         password_hash,
         user_created_method: "local".to_string(),
@@ -71,7 +76,9 @@ pub(crate) async fn initial_register_handler(
     };
 
     let users_collection = get_collection("users").expect("Failed to get users collection");
-
+    
+    crate::groups::setup_admin::create_admin_group().await;
+    
     match users_collection.insert_one(serialize_to_document(&user).expect("Failed to serialize user into document")).await {
         Ok(_) => {
             {
@@ -80,10 +87,19 @@ pub(crate) async fn initial_register_handler(
                 setup.write_to_disk();
             }
 
-            return (StatusCode::OK, Json(InitialRegisterResponse {
+            log_event(SecurityEvent {
+                event_type: "InitialRegister".to_string(),
+                event_desc: "First User registered as admin".to_string(),
+                user_id: Some(user.id),
+                session_id: None,
+                ip: get_ip(IpExtractor { headers: &headers, addr: &addr }),
+                other: None
+            }).await;
+
+            (StatusCode::OK, Json(InitialRegisterResponse {
                 success: true,
                 message: "User registered successfully".to_string()
-            }));
+            }))
         }
         Err(e) => {
             if is_duplicate_key_error(&e) {
@@ -92,10 +108,10 @@ pub(crate) async fn initial_register_handler(
                     message: "Username already exists (you may need to check your database, this is first register)".to_string()
                 }));
             }
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(InitialRegisterResponse {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(InitialRegisterResponse {
                 success: false,
                 message: "Failed to register user".to_string()
-            }));
+            }))
         }
     }
 }

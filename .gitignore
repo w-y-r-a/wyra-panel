@@ -1,0 +1,4 @@
+/target
+target/
+*.log
+host_uuid-DONT-DELETE-OR-MODIFY.txt

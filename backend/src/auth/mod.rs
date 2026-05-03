@@ -1,6 +1,7 @@
 pub(crate) mod initial_register;
 pub(crate) mod login;
 pub(crate) mod token_helpers;
+pub(crate) mod register;
 
 use serde::{Deserialize, Serialize};
 use bson::DateTime;
@@ -10,6 +11,7 @@ use bson::DateTime;
 pub(crate) struct User {
     pub(crate) id: String, // UUID for multi-server support,
     pub(crate) username: String,
+    pub(crate) disabled: bool,
     pub(crate) name: Option<String>,
     pub(crate) host: Option<String>, // Will be used for multi-server support
     pub(crate) host_uuid: Option<String>, // Will be used for multi-server support, to uniquely identify the server the user is registered on

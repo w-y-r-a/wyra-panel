@@ -31,7 +31,8 @@ pub(crate) async fn set_indexes() {
     
     let users_col = get_collection("users").expect("Failed to load users collection");
     let sessions_col = get_collection("sessions").expect("Failed to load sessions collection");
-    
+    let groups_col = get_collection("groups").expect("Failed to load groups collection");
+
     let options = IndexOptions::builder()
         .unique(true)
         .build();
@@ -51,10 +52,23 @@ pub(crate) async fn set_indexes() {
     
     let session_index = IndexModel::builder()
         .keys(doc! { "session_id": 1 })
-        .options(options)
+        .options(options.clone())
         .build();
     
     sessions_col.create_index(session_index).await.expect("Failed to create index for sessions");
+    
+    let group_id_index = IndexModel::builder()
+        .keys(doc! { "id": 1 })
+        .options(options.clone())
+        .build();
+
+    let group_name_index = IndexModel::builder()
+        .keys(doc! { "name": 1 })
+        .options(options)
+        .build();
+    
+    groups_col.create_index(group_id_index).await.expect("Failed to create index for groups");
+    groups_col.create_index(group_name_index).await.expect("Failed to create index for groups");
 }
 
 #[allow(dead_code)]
