@@ -67,6 +67,15 @@ pub fn value_to_bson(value: Value) -> Bson {
     }
 }
 
+// #[allow(dead_code)]
+// pub fn bson_to_value(b: Bson) -> Value {
+//     match b {
+//         Bson::Array(a) => Value::Array(a.iter().map(|i| bson_to_value(i.clone())).collect()),
+//         Bson::Binary(b) => Value::Array(b.bytes.iter().map(|i| serde_json::json!(i)).collect()),
+//         
+//     }
+// }
+
 // returned from get_user_from_headers
 pub struct UserCrossRoads {
     pub user: Document,

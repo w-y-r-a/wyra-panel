@@ -1,3 +1,5 @@
+// alot of this will be moved into the plugin crate
+
 use std::collections::HashMap;
 use bson::doc;
 use serde::{Serialize, Deserialize};
@@ -11,15 +13,13 @@ pub struct Permissions {
 
 impl Permissions {
     pub fn contains(&self, node: &str) -> bool {
-        if self.all_access {
+        if self.all_access || self.nodes.contains(&node.to_string()) {
             return true;
         }
-        if self.nodes.contains(&node.to_string()) {
-            return true;
-        }
+
         for perm in &self.nodes {
-            if let Some(prefix) = perm.strip_suffix(".*") {
-                if node.starts_with(&format!("{}.", prefix)) {
+            if let Some(prefix) = perm.strip_suffix('*') {
+                if node.starts_with(prefix) {
                     return true;
                 }
             }
@@ -80,8 +80,9 @@ pub(crate) fn init_permissions() {
     let mut core_permissions: HashMap<String, String> = HashMap::new();
     let mut permissions: HashMap<String, String> = HashMap::new();
 
-    core_permissions.insert("*".to_string(), "Access to all permissions".to_string());
+    core_permissions.insert("*".to_string(), "Access to all permissions (Dangerous to grant)".to_string());
     core_permissions.insert("core.node.manage".to_string(), "Manage nodes, gives all access to node management.".to_string());
+    core_permissions.insert("core.node.view".to_string(), "Allows the viewing of all nodes and their statuses.".to_string());
     core_permissions.insert("core.node.manage.connections".to_string(), "Gives ability to accept and reject node connections.".to_string());
     core_permissions.insert("core.users.manage.create".to_string(), "Gives ability to create users.".to_string());
     core_permissions.insert("core.users.manage.disable".to_string(), "Gives ability to disable users.".to_string());
@@ -89,8 +90,13 @@ pub(crate) fn init_permissions() {
     core_permissions.insert("core.users.manage.update.info".to_string(), "Gives ability to update info for users.".to_string());
     core_permissions.insert("core.users.manage.update.permissions".to_string(), "Gives ability to update permissions for users.".to_string());
     core_permissions.insert("core.users.manage.update".to_string(), "Gives ability to update users. (permissions and info)".to_string());
+    core_permissions.insert("core.groups.view".to_string(), "Gives ability to view groups".to_string());
+    core_permissions.insert("core.groups.rename".to_string(), "Gives ability to rename groups".to_string());
+    core_permissions.insert("core.groups.manage".to_string(), "Gives ability to manage (perms and rename) groups".to_string());
+    core_permissions.insert("core.groups.delete".to_string(), "Gives ability to delete groups".to_string());
 
-    // the following is pseudocode for how we would register permissions
+
+    // the following is "pseudocode" for how we would register permissions
     // let plugins_permissions: Vec<HashMap<String, String>> = get_all_plugins().permissions;
     // for plugin_perms in plugins_permissions {
     //     for (node, desc) in plugin_perms {

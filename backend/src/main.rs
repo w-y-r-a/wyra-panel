@@ -8,6 +8,7 @@ mod get_ip;
 mod security_logger;
 mod helpers;
 mod groups;
+mod user;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -119,6 +120,7 @@ async fn main() {
         .route("/auth/local/init_register", post(auth::initial_register::initial_register_handler))
         .route("/auth/local/login", post(auth::login::login))
         .route("/auth/local/register", post(auth::register::register_handler))
+        .route("/groups/view", post(groups::list::view_groups_handler))
 
         .method_not_allowed_fallback(axum_stuff::handler_405)
         .layer(
