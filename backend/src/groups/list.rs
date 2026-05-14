@@ -3,17 +3,7 @@ use crate::{database::get_collection, helpers::{get_user_from_headers, Other, Pa
 use axum::http::{HeaderMap, StatusCode};
 use bson::{doc, Document};
 use futures::TryStreamExt;
-use serde::Serialize;
 use serde_json::{Map, Value};
-
-// put into filter
-#[derive(Serialize)]
-struct DesiredFields {
-    name: String,
-    display_name: String,
-    id: String,
-    permissions: Vec<String>
-}
 
 // GET /groups/view
 pub(crate) async fn view_groups_handler(
